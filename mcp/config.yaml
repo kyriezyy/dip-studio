@@ -4,9 +4,9 @@ server:
   transport: "http"
   # Authentication is disabled - clients can connect directly without tokens
 
-documents:
-  base_path: "./requirements"  # 需求文档存储路径
-  supported_formats: [".pdf", ".md", ".docx", ".txt"]
+# Studio 内部接口 base URL（get_context 工具调用，K8s 内示例：http://dip-studio.anyshare:8000）
+studio:
+  base_url: "http://localhost:8000"
 
 api_specs:
   base_path: "./api-specs"  # API规范文档存储路径
