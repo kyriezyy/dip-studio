@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -15,7 +19,6 @@ except ImportError:
     MCP_AVAILABLE = False
     FastMCP = None
 
-from .document_loader import DocumentLoader
 from .openapi_loader import OpenAPILoader
 
 # Configure logging
@@ -26,9 +29,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Global instances (will be initialized in setup)
-document_loader: DocumentLoader | None = None
 openapi_loader: OpenAPILoader | None = None
 mcp: FastMCP | None = None
+studio_base_url: str = ""
+
+# 标准开发任务说明（get_context 返回中附带，供 Coding Agent 使用）
+DEVELOPMENT_TASK = """请你作为本项目的专业开发助手，基于当前功能节点以及其上下文：
+
+1. 先全面阅读与当前节点相关的设计文档和上游/下游节点信息，理解业务背景和已有实现。
+2. 在充分理解的基础上，编写或修改所需的代码（包括后端接口、领域逻辑、数据访问层或必要的前端代码），保证与现有架构和约定风格一致。
+3. 如涉及数据库或接口契约变更，请同步考虑并描述数据结构、接口入参/出参的设计。
+4. 对你编写或修改的代码，给出简要的设计说明（核心思路、关键数据流、边界条件处理）。
+5. 如有必要，请给出对应的测试思路或示例测试用例（单元测试或集成测试），以便后续补充自动化测试。
+
+回答中请优先给出可直接使用的代码片段，并避免与现有逻辑产生冲突。"""
+
+# 技术要求列表（get_context 返回中附带）
+TECHNICAL_REQUIREMENTS = [
+    "使用 Python 3 作为后端语言",
+    "在 .venv 下创建 Python 虚拟环境",
+    "使用 FastAPI 作为后端服务框架",
+    "后端接口超时时间为 1 分钟",
+    "使用 TypeScript 作为前端开发语言",
+    "使用 ReactJS 作为前端框架",
+    "使用 Tailwind CSS 作为 CSS 框架",
+    "使用 Ant Design 作为 UI 框架，参考 @docs/vendor/antdesign/llms.txt",
+    "使用 @kweaver-ai/chatkit 作为 AI 助手交互组件，安装 NPM 包后仔细阅读 README.md 了解使用方式",
+]
 
 
 def _format_error_response(error: Exception, **kwargs: Any) -> str:
@@ -59,11 +86,6 @@ def load_config() -> dict[str, Any]:
             logger.warning("Config file is empty, using defaults")
             return {}
         
-        # Validate required sections
-        if "documents" not in config:
-            logger.warning("No 'documents' section in config, using defaults")
-            config["documents"] = {}
-        
         if "api_specs" not in config:
             logger.warning("No 'api_specs' section in config, using defaults")
             config["api_specs"] = {}
@@ -79,7 +101,7 @@ def load_config() -> dict[str, Any]:
 
 def setup_server() -> None:
     """Initialize server components with configuration."""
-    global document_loader, openapi_loader, mcp
+    global openapi_loader, mcp, studio_base_url
     
     try:
         config = load_config()
@@ -89,17 +111,9 @@ def setup_server() -> None:
         host = server_config.get("host", "0.0.0.0")
         port = server_config.get("port", 8000)
         
-        # Initialize document loader
-        doc_config = config.get("documents", {})
-        base_path = doc_config.get("base_path", "./requirements")
-        # Resolve relative to mcp directory
-        if not Path(base_path).is_absolute():
-            base_path = str(Path(__file__).parent.parent / base_path)
-        
-        document_loader = DocumentLoader(
-            base_path=Path(base_path),
-            supported_formats=doc_config.get("supported_formats", [".pdf", ".md", ".docx", ".txt"])
-        )
+        # Studio internal API base URL (for get_context); env STUDIO_BASE_URL overrides config
+        studio_config = config.get("studio", {})
+        studio_base_url = (os.environ.get("STUDIO_BASE_URL") or studio_config.get("base_url") or "").rstrip("/")
         
         # Initialize OpenAPI loader
         api_specs_config = config.get("api_specs", {})
@@ -129,8 +143,8 @@ def setup_server() -> None:
                 port=port
             )
             
-            # Register requirement document tools
-            _register_requirement_tools()
+            # Register get_context tool (calls Studio internal API)
+            _register_get_context_tool()
             
             # Register API endpoint tools
             _register_api_tools()
@@ -150,59 +164,70 @@ def setup_server() -> None:
         raise
 
 
-def _register_requirement_tools() -> None:
-    """Register requirement document tools."""
+def _parse_node_id_from_prompt(prompt: str) -> int | None:
+    """从 prompt 中解析 node_id：优先匹配 Studio 节点 URL 中的 /nodes/<id>，其次 node_id: 或 node_id=。"""
+    if not prompt or not isinstance(prompt, str):
+        return None
+    # 优先：URL 中的 /nodes/数字（取最后一处，即当前节点）
+    matches = re.findall(r"/nodes/(\d+)", prompt)
+    if matches:
+        return int(matches[-1])
+    # 备用：node_id: 123 或 node_id=123
+    m = re.search(r"node_id\s*[:=]\s*(\d+)", prompt, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _register_get_context_tool() -> None:
+    """注册 get_context 工具：从 Studio 内部接口获取项目上下文，供 Coding Agent 使用。"""
     if mcp is None:
         return
     
     @mcp.tool()
-    def list_requirements() -> str:
-        """List all available requirement documents.
-        
-        Returns a list of document IDs and metadata.
-        """
+    def get_context(prompt: str) -> str:
+        """Get full project context from DIP Studio for the Coding Agent. You MUST call this tool with the exact prompt string that the user obtained from DIP Studio (e.g. copy prompt for Coding Agent). The prompt may contain (1) a Studio node URL containing \"/nodes/<id>\" (e.g. .../projects/1/nodes/42), or (2) a line \"node_id: <id>\". This tool parses the node_id, fetches from Studio: context (ancestor nodes and documents as background) and content_to_develop (target node and descendants with document_text). Use the returned JSON to write or update code. Input: prompt (string, may be in Chinese). Output: JSON with \"context\" and \"content_to_develop\", each a list of { \"node\", \"document\", \"document_text\" }."""
         try:
-            if document_loader is None:
-                raise RuntimeError("Document loader not initialized")
+            if not prompt or not prompt.strip():
+                return _format_error_response(ValueError("prompt 不能为空"), hint="请使用从 Studio 复制的完整 prompt（可包含节点 URL 或 node_id）")
             
-            documents = document_loader.list_documents()
-            return _format_success_response({
-                "documents": documents,
-                "count": len(documents)
-            })
+            node_id = _parse_node_id_from_prompt(prompt)
+            if node_id is None:
+                return _format_error_response(
+                    ValueError("prompt 中未包含有效的 Studio 节点 URL 或 node_id"),
+                    hint="请从 Studio 复制包含节点链接或 node_id 的完整 prompt"
+                )
+            
+            if not studio_base_url:
+                return _format_error_response(
+                    RuntimeError("MCP 未配置 studio.base_url，无法请求 Studio"),
+                    hint="请在 config.yaml 中配置 studio.base_url"
+                )
+            
+            import httpx
+            url = f"{studio_base_url}/internal/api/dip-studio/v1/nodes/{node_id}/application-detail"
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+            # 在 MCP 侧拼接开发任务与技术要求，供 Coding Agent 直接使用
+            if isinstance(data, dict):
+                data = dict(data)
+                data["development_task"] = DEVELOPMENT_TASK
+                data["technical_requirements"] = TECHNICAL_REQUIREMENTS
+            return _format_success_response(data)
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Studio 请求失败: {e.response.status_code} {e.response.text}")
+            return _format_error_response(
+                e,
+                status_code=e.response.status_code,
+                hint="请检查 Studio 服务是否可用及 node_id 是否有效"
+            )
         except Exception as e:
-            logger.error(f"Error listing requirements: {e}")
-            return _format_error_response(e, documents=[], count=0)
+            logger.exception(f"get_context 失败: {e}")
+            return _format_error_response(e, hint="请检查 prompt 格式及 Studio 配置")
     
-    @mcp.tool()
-    def read_requirement(doc_id: str) -> str:
-        """Read a specific requirement document by ID.
-        
-        Args:
-            doc_id: The document ID (filename without extension)
-        
-        Returns the document content and metadata.
-        """
-        try:
-            if not doc_id:
-                raise ValueError("doc_id is required")
-            
-            if document_loader is None:
-                raise RuntimeError("Document loader not initialized")
-            
-            content = document_loader.load_document(doc_id)
-            metadata = document_loader.get_metadata(doc_id)
-            
-            return _format_success_response({
-                "doc_id": doc_id,
-                "content": content,
-                "metadata": metadata
-            })
-        except Exception as e:
-            logger.error(f"Error reading requirement: {e}")
-            return _format_error_response(e, doc_id=doc_id)
-    
-    logger.info("Registered requirement document tools: list_requirements, read_requirement")
+    logger.info("Registered tool: get_context")
 
 
 def _register_api_tools() -> None:
@@ -456,17 +481,6 @@ def _register_resources() -> None:
     """Register MCP resources."""
     if mcp is None:
         return
-    @mcp.resource("requirement://{doc_id}")
-    def get_requirement_resource(doc_id: str) -> str:
-        """Get requirement document resource."""
-        try:
-            if document_loader is None:
-                raise RuntimeError("Document loader not initialized")
-            return document_loader.load_document(doc_id)
-        except Exception as e:
-            logger.error(f"Error reading resource requirement://{doc_id}: {e}")
-            return f"Error: {str(e)}"
-    
     @mcp.resource("api-spec://{spec_id}")
     def get_api_spec_resource(spec_id: str) -> str:
         """Get OpenAPI specification document resource."""
@@ -535,7 +549,7 @@ def _register_resources() -> None:
             logger.error(f"Error reading resource api-example://{spec_id}: {e}")
             return _format_error_response(e, spec_id=spec_id)
     
-    logger.info("Registered resources: requirement, api-spec, api-integration, api-example")
+    logger.info("Registered resources: api-spec, api-integration, api-example")
 
 
 def main() -> None:
