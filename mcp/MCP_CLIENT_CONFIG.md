@@ -300,6 +300,28 @@ Cursor 可以自动使用这些工具来：
 }
 ```
 
+### 生产环境（HTTPS + 网关路径）
+
+生产环境通过 Ingress 暴露在 `/api/dip-mcp/v1` 下，使用 HTTPS 和统一网关。客户端配置示例（将 `10.4.134.26` 替换为实际网关地址或域名）：
+
+```json
+{
+  "mcpServers": {
+    "dip-studio": {
+      "url": "https://10.4.134.26/api/dip-mcp/v1/mcp",
+      "transport": "https",
+      "headers": {
+        "Authorization": "Bearer no-auth-required"
+      }
+    }
+  }
+}
+```
+
+- `url`: 网关基地址 + 路径 `/api/dip-mcp/v1/mcp`
+- `transport`: 使用 `"https"`
+- `headers.Authorization`: 若客户端要求必须带认证头，可使用 `"Bearer no-auth-required"`（服务端不校验）
+
 ## 最佳实践
 
 1. **本地开发**: 使用 `localhost:8001`
