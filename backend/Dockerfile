@@ -1,0 +1,40 @@
+# DIP Studio Backend Dockerfile
+# Multi-stage build for optimized image
+
+# Build stage
+FROM acr.aishu.cn/dip/py.build:3.10.18-20251020 as builder
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Runtime stage
+FROM acr.aishu.cn/dip/py.build:3.10.18-20251020
+
+WORKDIR /app
+
+# Copy dependencies from builder
+COPY --from=builder /root/.local /root/.local
+
+# Make sure scripts in .local are usable
+ENV PATH=/root/.local/bin:$PATH
+
+# Copy application code
+COPY src/ ./src/
+
+# Set environment variables
+ENV DIP_STUDIO_HOST=0.0.0.0
+ENV DIP_STUDIO_PORT=8000
+ENV PYTHONPATH=/app
+
+# Expose port
+EXPOSE 8000
+
+# Health check (stdlib only, no extra deps)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/dip-studio/v1/healthz')" || exit 1
+
+# Run the application
+CMD ["/usr/local/bin/python3", "-m", "src.main"]

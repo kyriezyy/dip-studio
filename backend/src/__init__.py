@@ -1,0 +1,1 @@
+"""DIP Studio backend application."""
