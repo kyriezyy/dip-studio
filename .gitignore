@@ -1,0 +1,8 @@
+logs
+*.log
+
+*.local
+.venv/
+
+.vscode/
+.DS_Store
