@@ -1,0 +1,23 @@
+openapi: 3.1.0
+
+info:
+  title: DIP Studio 接口
+  description: |
+    DIP Studio 后端接口文档（当前仅包含健康检查）。
+  version: 0.1.0
+
+tags:
+  - name: Health
+    description: 健康检查接口
+
+security: []
+
+servers:
+  - url: /api/dip-studio/v1
+    description: DIP Studio API 服务
+
+paths:
+  /healthz:
+    $ref: "./health/health.paths.yaml#~1paths~1healthz"
+  /readyz:
+    $ref: "./health/health.paths.yaml#~1paths~1readyz"

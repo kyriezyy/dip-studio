@@ -1,0 +1,60 @@
+# 名称空间，服务都要在同一个空间。
+namespace: anyshare
+
+# 1 修改标签
+labels:
+  deployment:
+    name: dip-studio
+  pod:
+    app: dip-studio
+  service:
+    app: dip-studio
+
+# 2 修改仓库服务的镜像地址
+image:
+  registry: acr.aishu.cn
+  repository: dip/dip-studio
+  tag: "0.1.0-develop"
+  pullPolicy: IfNotPresent
+
+#3 修改容器副本数量
+replicaCount: 1
+
+#4 修改deployment的名称
+name: dip-studio-deployment
+
+nodeSelector: { }
+
+affinity: { }
+
+tolerations: [ ]
+
+#需要暴露的端口号列表
+ports:
+  name: server-port
+  containerPort: 8000
+
+service:
+  name: dip-studio
+  type: ClusterIP
+  port: 8000
+  version: "0.1.0"
+  apiPrefix: "/api/dip-studio/v1"
+
+# ingress 相关配置
+ingress:
+  enabled: true
+  path: /api/dip-studio
+
+depServices:
+  class-443:
+    ingressClass: class-443
+
+# 修改pod资源限制：cpu示例:0.5/500m/1/1000m;memory示例:512Mi/1Gi
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

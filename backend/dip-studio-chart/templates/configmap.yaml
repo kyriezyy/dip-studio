@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.name }}-cm
+  namespace: {{ .Values.namespace }}
+data:
+  {{- with .Values }}
+  # 应用配置 - 根据 settings.py 生成
+  DIP_STUDIO_APP_NAME: "DIP Studio"
+  DIP_STUDIO_APP_VERSION: "{{ .service.version }}"
+  DIP_STUDIO_DEBUG: "false"
+
+  # 服务器配置
+  DIP_STUDIO_HOST: "0.0.0.0"
+  DIP_STUDIO_PORT: "{{ .ports.containerPort }}"
+  DIP_STUDIO_WORKERS: "1"
+
+  # API 配置
+  DIP_STUDIO_API_PREFIX: "{{ .service.apiPrefix }}"
+
+  # 日志配置
+  DIP_STUDIO_LOG_LEVEL: "INFO"
+  DIP_STUDIO_LOG_FORMAT: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  # 健康检查配置
+  DIP_STUDIO_HEALTH_CHECK_TIMEOUT: "5"
+  {{- end }}

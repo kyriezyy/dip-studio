@@ -1,0 +1,16 @@
+openapi: 3.1.0
+
+info:
+  title: DIP Studio 内部接口
+  version: 0.1.0
+
+security: []
+
+servers:
+  - url: /api/dip-studio/v1
+
+paths:
+  /healthz:
+    $ref: "./health/health.paths.yaml#~1paths~1healthz"
+  /readyz:
+    $ref: "./health/health.paths.yaml#~1paths~1readyz"
